@@ -1,0 +1,491 @@
+#!/bin/sh -e
+
+# Wrapper script for storing plain-text, markup, encrypted notes.
+# See "note -h" for more details.
+#
+# Dependencies:
+# - bemenu, fzf
+# - rsync
+# - secrets (custom script for encrypted directories)
+# - md2html (md4c)
+# - env: $BROWSER (fallback to firefox)
+# - env: $PDF_READER (fallback to zathura)
+# - git
+# - lxmake (custom script for LaTeX support)
+# - typst (for typst support)
+# - lilypond (for lilypond support)
+#
+# For the lxmake script see https://github.com/Randoragon/dotfiles/blob/master/scripts/.local/bin/lxmake
+
+# CONFIG
+NOTES="${XDG_DATA_HOME:-~/.local/share}/notes"
+NOTES_CACHE="$NOTES/.cache"
+SECRETS="$NOTES/secrets"
+PDF_READER="${PDF_READER:-zathura}"
+BROWSER="${BROWSER:-firefox}"
+
+help () {
+    printf "\
+Usage:
+    note [OPTIONS] [NAME]
+
+    NAME is the name of the note to target. NAME can be omitted,
+    in which case note will let you interactively select a note
+    with either bemenu or fzf. The default action is viewing.
+
+Options:
+    -e, --edit
+        Open note for editing instead of viewing. If the note
+        does not exist, it is created.
+
+    -r, --raw
+        Output an unprocessed note directory. Can only be used with
+        the -o option. The FILE argument must be a directory and
+        cannot be - (standard output not supported).
+
+    -o FILE, --output FILE
+        Output note to file, or - for standard output. This option
+        is mutually exclusive with --edit and creating new notes.
+
+    -h, --help
+        Display this help text.
+
+    --bemenu, --fzf
+        Force the use of bemenu or fzf. By default, bemenu will be
+        used if the stdin descriptor is not open (test ! -t 0)
+        and fzf will be used otherwise. However, this test is not
+        foolproof, and so you can force either bemenu or fzf with
+        these options, if you need. They are mutually exclusive
+        and only take effect if NAME has not been passed.
+
+NAME Extensions:
+    *.txt       Plain text.
+
+    *.md        Markdown.
+
+    *.tex       XeLaTeX.
+
+    *.typ       Typst. See https://github.com/typst/typst
+
+    *.ly        Lilypond. See https://lilypond.org/
+
+String Substitutions:
+    Inside a note in any format, the following strings will be
+    substituted before compilation:
+
+        NOTE_MTIME - last modification time, e.g. 'Tue 2021-08-10 14:20 CEST'
+"
+}
+
+# strsub <source> <file>
+# Does in-place string substitution, as described in --help.
+# source is the file that will be stat'ted for information
+# SOURCE MUST BE A NOTES GIT REPO FILE!!!
+# file is the file that will be modified with substitutions
+strsub () {
+    # Update modified time according to git data
+    epoch="$(git -C "$SECRETS" log -1 --format='%at' -- "$1")"
+    touch -mct "$(date -d "@$epoch" '+%Y%m%d%H%M.%S')" -- "$1"
+
+    mtime="$(date -d "@$epoch" '+%a %Y-%m-%d %H:%M %Z')"
+    sed -i -e "s/NOTE_MTIME/$mtime/g" "$2"
+}
+
+# cached_get_fpath <note>
+# note - path to the note subdirectory, relative to $NOTES
+# Returns the filepath to where the cache for note should be. If note is not
+# a type that gets cached, exits with an error.
+cached_get_fpath () {
+    note="$1"
+    ext="${note##*.}"
+    case "$ext" in
+        tex|typ|ly) echo "$NOTES_CACHE/$(echo "$dir" | md5sum | cut -d' ' -f1).pdf.gpg" ;;
+        *)
+            echo "note: internal error! extension not recognized as cacheable: $ext" >&2
+            exit 3
+            ;;
+    esac
+}
+
+# cached_ensure_exists <note>
+# note - path to the note subdirectory, relative to $NOTES
+# Caches the note if cache does not exists or is out of date.
+cached_ensure_exists () {
+    note="$1"
+    ext="${note##*.}"
+    dir="$SECRETS/$note"
+    notemain="$dir/$(basename -- "$note")"
+    cache_fpath="$(cached_get_fpath "$note")"
+
+    # Read mtime of the note. Will be useful later
+    src_epoch="$(git -C "$SECRETS" log -1 --format='%at' -- "$note")"
+
+    cache_exists_and_matches_src=
+    if [ -n "$cache_fpath" ] && [ -f "$cache_fpath" ]; then
+        # Compare mtime of cache and source
+        cache_epoch="$(stat -c %Y -- "$cache_fpath")"
+        # We want exact equality here, because the cache cannot be outdated,
+        # but also we don't want it to "lie" to us if for some reason source
+        # regressed. The cache must reflect the exact version of the source.
+        [ "$cache_epoch" -eq "$src_epoch" ] && cache_exists_and_matches_src=1
+    fi
+
+    if [ -z "$cache_exists_and_matches_src" ]; then
+        # Create/update the cache
+        mkdir -p -- "$NOTES_CACHE"
+        case "$ext" in
+            tex)
+                notemain2="$(mktemp -p "$dir" tmp.XXXXX)"
+                cp -- "$notemain" "$notemain2"
+                strsub "$notemain" "$notemain2"
+                lxmake "$notemain2" - | secrets oe "$NOTES" - "$cache_fpath"
+                rm -f -- "$notemain2"
+                ;;
+            typ)
+                notemain2="$(mktemp -p "$dir" tmp.XXXXX)"
+                cp -- "$notemain" "$notemain2"
+                strsub "$notemain" "$notemain2"
+                typst compile -- "$notemain2" - | secrets oe "$NOTES" - "$cache_fpath"
+                rm -f -- "$notemain2"
+                ;;
+            ly)
+                notemain2="$(mktemp -p "$dir" tmp.XXXXX)"
+                tmppdf="$(mktemp --tmpdir note.XXXXX)"
+                cp -- "$notemain" "$notemain2"
+                strsub "$notemain" "$notemain2"
+                lilypond -s -o "$tmppdf" "$notemain2"  # lilypond doesn't support stdout export
+                secrets oe "$NOTES" "$tmppdf" "$cache_fpath"
+                rm -f -- "$notemain2" "$tmppdf"
+                ;;
+        esac
+        # Ensure the cache has the exact same mtime as the source from which it was generated.
+        touch -mct "$(date -d "@$src_epoch" '+%Y%m%d%H%M.%S')" -- "$cache_fpath"
+    fi
+}
+
+# edit <note>
+# note - path to the note subdirectory, relative to $NOTES
+edit () {
+    note="$1"
+    ext="${note##*.}"
+    dir="$SECRETS/$note"
+    notemain="$dir/$(basename -- "$note")"
+
+    # Custom preprocessing based on file type.
+    # The files variable holds a string of filenames to open.
+    files="$notemain"
+    case "$ext" in
+        typ) export TYPST_ROOT="$dir" ;;
+    esac
+
+    if [ -z "$interactive" ]; then
+        # shellcheck disable=SC2086
+        echo "$files" | xargs $TERMINAL -e $EDITOR "+cd $dir" --
+    else
+        # shellcheck disable=SC2086
+        echo "$files " | xargs $EDITOR "+cd $dir" --
+    fi
+    if ! secrets modified "$NOTES" >/dev/null; then
+        echo 'No changes were made, skipping.'
+    else
+        git -C "$SECRETS" add -- "$note"
+        git -C "$SECRETS" commit -m "Edit $note" -- "$note"
+        secrets save "$NOTES"
+    fi
+}
+
+# view <note>
+# note - path to the note subdirectory, relative to $NOTES
+view () {
+    note="$1"
+    ext="${note##*.}"
+    dir="$SECRETS/$note"
+    notemain="$dir/$(basename -- "$note")"
+
+    # Delegate cached note types to cached_view
+    case "$ext" in
+        tex|typ|ly)
+            cached_view "$@"
+            return $?
+            ;;
+        *) ;;
+    esac
+
+    # TODO?: this is unnecessary for cached notes
+    tmpd="$(mktemp --tmpdir -d note.XXXXX)"
+    tmpdmain="$tmpd/$(basename -- "$note")"
+    rsync -a --delete -- "$dir"/ "$tmpd"/
+
+    # Perform string substitutions
+    strsub "$notemain" "$tmpdmain"
+
+    case "$ext" in
+        txt)
+            if [ -z "$interactive" ]; then
+                # shellcheck disable=SC2086
+                $TERMINAL -e $PAGER -- "$tmpdmain"
+            else
+                $PAGER -- "$tmpdmain"
+            fi
+            ;;
+        md)
+            tmp="$(mktemp -p "$tmpd" note.XXXXX.html)"
+            printf '%s' "$HTML_MD_STYLE" >"$tmp"
+            md2html --github -- "$tmpdmain" >>"$tmp"
+            [ -s "$tmp" ] && $BROWSER file://"$tmp" && sleep 2  # Browsers tend to be non-blocking, so wait a bit before deleting
+            ;;
+        *)
+            printf "note: unknown note format '%s'\n" "$ext" >&2
+    esac
+    rm -rf -- "$tmpd"
+}
+
+# cached_view <note>
+# note - path to the note subdirectory, relative to $NOTES
+# This function is same as view, except it assumes the note uses caching and
+# will attempt to find the cached file, and will generate it if it does not
+# exist.
+cached_view () {
+    note="$1"
+    cache_fpath="$(cached_get_fpath "$note")"
+
+    cached_ensure_exists "$note"
+
+    # View the cache
+    case "$cache_fpath" in
+        *.pdf.gpg)
+            secrets od "$NOTES" "$cache_fpath" - | $PDF_READER -
+            ;;
+        *)
+            echo "note: don't know how to view cache '$cache_fpath'" >&2
+            exit 3
+            ;;
+    esac
+}
+
+# create <note>
+# note is a path of a new note relative to NOTES
+create () {
+    note="$1"
+    ext="${note##*.}"
+    dir="$SECRETS/$note"
+    notemain="$dir/$(basename -- "$note")"
+
+    [ -d "$dir" ] && echo "note: $dir already exists" >&2 && exit 6
+    mkdir -p -- "$dir"
+    :>"$notemain"
+
+    if [ -z "$interactive" ]; then
+        # shellcheck disable=SC2086
+        echo "$files" | xargs $TERMINAL -e $EDITOR "+cd $dir" --
+    else
+        # shellcheck disable=SC2086
+        echo "$files" | xargs $EDITOR "+cd $dir" --
+    fi
+    if [ ! -s "$notemain" ]; then
+        echo 'Note left empty, cancelling.'
+        rm -rf -- "${SECRETS:?}/${note:?}"
+    else
+        git -C "$SECRETS" add -- "$note"
+        git -C "$SECRETS" commit -m "Create $note" -- "$note"
+    fi
+    rm -rf -- "$tmpd"
+}
+
+# output <note> <output>
+# note - path to the note subdirectory, relative to $NOTES
+# output - path to the file to export to, or - for stdout
+output () {
+    note="$1"
+    ext="${note##*.}"
+    dir="$SECRETS/$note"
+    output="$2"
+
+    [ -n "$raw" ] && {
+        [ -e "$output" ] && {
+            [ ! -d "$output" ] && printf "note: '%s' exists and is not a directory\n" "$output" >&2 && exit 1
+            [ -n "$(ls -qA -- "$output")" ] && printf "note: '%s' exists and is not empty\n" "$output" >&2 && exit 1
+        }
+        rsync -a --delete -- "$SECRETS/$note"/ "$output"/
+        return
+    }
+
+    # Delegate cached note types to cached_output
+    case "$ext" in
+        tex|typ|ly)
+            cached_output "$@"
+            return $?
+            ;;
+        *) ;;
+    esac
+
+    tmpd="$(mktemp --tmpdir -d note.XXXXX)"
+    tmpdmain="$tmpd/$(basename -- "$note")"
+    rsync -a --delete -- "$dir"/ "$tmpd"/
+    stdout=
+    [ "$output" = '-' ] && stdout=1
+
+    # Perform string substitutions
+    strsub "$SECRETS/$note" "$tmpdmain"
+
+    case "$ext" in
+        txt)
+            if [ $stdout ]; then
+                cat -- "$tmpdmain"
+            else
+                cp -- "$tmpdmain" "$output"
+            fi
+            ;;
+        md)
+            if [ $stdout ]; then
+                printf "%s" "$HTML_MD_STYLE"
+                md2html --github -- "$tmpdmain"
+            else
+                printf "%s" "$HTML_MD_STYLE" >"$output"
+                md2html --github -- "$tmpdmain" >>"$output"
+            fi
+            ;;
+        *)
+            printf "note: unknown note format '%s'\n" "$ext" >&2
+            ;;
+    esac
+    rm -rf -- "$tmpd"
+}
+
+# cached_output <note> <output>
+# note - path to the note subdirectory, relative to $NOTES
+# output - path to the file to export to, or - for stdout
+# This function is same as output, except it assumes the note uses caching and
+# will attempt to find the cached file, and will generate it if it does not
+# exist.
+cached_output () {
+    note="$1"
+    ext="${note##*.}"
+    cache_fpath="$(cached_get_fpath "$note")"
+    output="$2"
+
+    cached_ensure_exists "$note"
+
+    case "$ext" in
+        tex|typ|ly)
+            secrets od "$NOTES" "$cache_fpath" "$output"
+            ;;
+        *)
+            echo "note: don't know how to output cache '$cache_fpath'" >&2
+            exit 3
+            ;;
+    esac
+}
+
+note=
+edit=
+raw=
+output=
+force_bemenu=
+force_fzf=
+while true; do
+    case "$1" in
+        -h|--help) help ; exit ;;
+        -e|--edit) edit=1 ; shift ;;
+        -r|--raw) raw=1 ; shift ;;
+        -o|--output)
+            if [ -z "$2" ]; then
+                echo 'note: output filename needed' >&2
+                exit 2
+            else
+                output="$2"
+                shift 2
+            fi ;;
+        --bemenu) force_bemenu=1 ; shift ;;
+        --fzf)   force_fzf=1   ; shift ;;
+        --) shift ; break ;;
+        *) break ;;
+    esac
+done
+if [ $# -eq 1 ]; then
+    note="$1"
+    [ -z "$(basename -- "$note")" ] && {
+        echo 'note: cannot create a note with empty filename' >&2
+        exit 2
+    }
+elif [ $# -ne 0 ]; then
+    echo 'note: too many arguments' >&2
+    exit 1
+fi
+
+# Validate command-line arguments
+[ -n "$force_bemenu" ] && [ -n "$force_fzf" ] && {
+    echo 'note: --fzf and --bemenu are mutually exclusive' >&2
+    exit 5
+}
+[ -n "$raw" ] && [ -z "$output" ] && {
+    echo 'note: --raw can only be used with --output' >&2
+    exit 5
+}
+[ -n "$raw" ] && [ "$output" = '-' ] && {
+    echo 'note: cannot output to stdout when using --raw' >&2
+    exit 5
+}
+[ -n "$edit" ] && [ -n "$output" ] && {
+    echo 'note: --edit and --output are mutually exclusive' >&2
+    exit 5
+}
+
+# Check if shell is interactive
+if [ -n "$force_bemenu" ]; then
+    interactive=
+elif [ -n "$force_fzf" ]; then
+    interactive=1
+else
+    interactive=
+    [ -t 0 ] && interactive=1
+fi
+
+secrets decrypt "$NOTES"
+
+# If the NAME argument was not specified, ask interactively
+if [ -z "$note" ]; then
+    if [ -n "$edit" ]; then
+        prompt='Edit Note:'
+    elif [ -n "$output" ]; then
+        prompt='Output Note:'
+    else
+        prompt='View Note:'
+    fi
+
+    # For interactive shells use fzf, otherwise use bemenu.
+    set +e
+    if [ -n "$interactive" ]; then
+        note="$(cd "$SECRETS" && find . -type d -name '?*.*' -exec realpath --relative-to "$SECRETS" '{}' \; \
+            | fzf --no-sort --no-multi --prompt "$prompt ")"
+    else
+        note="$(cd "$SECRETS" && find . -type d -name '?*.*' -exec realpath --relative-to "$SECRETS" '{}' \; \
+            | bemenu -l 20 -p "$prompt")"
+    fi
+    set -e
+
+    [ -z "$note" ] && exit
+fi
+
+# Handle targeting non-existent notes (which is only allowed when editing)
+[ ! -d "$SECRETS/$note" ] && [ -z "$edit" ] && {
+    printf "note: '%s' does not exist\n" "$note" >&2
+    exit 1
+}
+
+# Execute the right action
+if [ -n "$output" ]; then
+    output "$note" "$output"
+elif [ -n "$edit" ]; then
+    if [ ! -d "$SECRETS/$note" ]; then
+        case "$note" in
+            *.txt|*.md|*.tex|*.typ|*.ly) ;;
+            *) echo 'note: missing or unsupported extension' >&2 && exit 2 ;;
+        esac
+        create "$note"
+    else
+        edit "$note"
+    fi
+else
+    view "$note"
+fi
