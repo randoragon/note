@@ -1,0 +1,97 @@
+{
+  "nodes": {
+    "lxmake": {
+      "inputs": {
+        "nixpkgs": "nixpkgs"
+      },
+      "locked": {
+        "lastModified": 1748946212,
+        "narHash": "sha256-utvxHS72BTm8mKpKCNDuUckWd67C8odF/Rp0a8dvQQI=",
+        "owner": "randoragon",
+        "repo": "lxmake",
+        "rev": "a4ee01b93ea31c4f83ff05acd2f8bfd331647639",
+        "type": "github"
+      },
+      "original": {
+        "owner": "randoragon",
+        "repo": "lxmake",
+        "type": "github"
+      }
+    },
+    "nixpkgs": {
+      "locked": {
+        "lastModified": 1748693115,
+        "narHash": "sha256-StSrWhklmDuXT93yc3GrTlb0cKSS0agTAxMGjLKAsY8=",
+        "owner": "nixos",
+        "repo": "nixpkgs",
+        "rev": "910796cabe436259a29a72e8d3f5e180fc6dfacc",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nixos",
+        "ref": "nixos-unstable",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "nixpkgs_2": {
+      "locked": {
+        "lastModified": 1748693115,
+        "narHash": "sha256-StSrWhklmDuXT93yc3GrTlb0cKSS0agTAxMGjLKAsY8=",
+        "owner": "nixos",
+        "repo": "nixpkgs",
+        "rev": "910796cabe436259a29a72e8d3f5e180fc6dfacc",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nixos",
+        "ref": "nixos-unstable",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "nixpkgs_3": {
+      "locked": {
+        "lastModified": 1748693115,
+        "narHash": "sha256-StSrWhklmDuXT93yc3GrTlb0cKSS0agTAxMGjLKAsY8=",
+        "owner": "nixos",
+        "repo": "nixpkgs",
+        "rev": "910796cabe436259a29a72e8d3f5e180fc6dfacc",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nixos",
+        "ref": "nixos-unstable",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "root": {
+      "inputs": {
+        "lxmake": "lxmake",
+        "nixpkgs": "nixpkgs_2",
+        "secrets": "secrets"
+      }
+    },
+    "secrets": {
+      "inputs": {
+        "nixpkgs": "nixpkgs_3"
+      },
+      "locked": {
+        "lastModified": 1748946482,
+        "narHash": "sha256-mHS966Hh3mVrLYEf06dJxOaBiQEmzqzc57dcdLL6Vl0=",
+        "owner": "randoragon",
+        "repo": "secrets",
+        "rev": "1721693baa0e3bb32f2e58bb6f0339376b622e49",
+        "type": "github"
+      },
+      "original": {
+        "owner": "randoragon",
+        "repo": "secrets",
+        "type": "github"
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}
