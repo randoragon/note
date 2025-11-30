@@ -1,5 +1,5 @@
 {
-  description = "A command-line utility for local notes management";
+ description = "A command-line utility for local notes management";
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
     secrets.url = "github:randoragon/secrets";
