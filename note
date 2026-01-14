@@ -377,6 +377,13 @@ cached_output () {
     esac
 }
 
+# Lists all notes. Used for bemenu and fzf.
+list_notes () {
+    find -L "$SECRETS" -type d -name '?*.*' \
+        | sort \
+        | xargs -- realpath --relative-to "$SECRETS" --
+}
+
 note=
 edit=
 raw=
@@ -456,11 +463,9 @@ if [ -z "$note" ]; then
     # For interactive shells use fzf, otherwise use bemenu.
     set +e
     if [ -n "$interactive" ]; then
-        note="$(cd "$SECRETS" && find . -type d -name '?*.*' -exec realpath --relative-to "$SECRETS" '{}' \; \
-            | fzf --no-sort --no-multi --prompt "$prompt ")"
+        note="$(list_notes | fzf --no-sort --no-multi --prompt "$prompt ")"
     else
-        note="$(cd "$SECRETS" && find . -type d -name '?*.*' -exec realpath --relative-to "$SECRETS" '{}' \; \
-            | bemenu -l 20 -p "$prompt")"
+        note="$(list_notes | bemenu -l 20 -p "$prompt")"
     fi
     set -e
 
